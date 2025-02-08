@@ -1,148 +1,157 @@
 <!DOCTYPE html>
 <html>
-<head>
-  <meta charset="UTF-8">
-  <title>Video Chat Room: {{ room_name }}</title>
-  <style>
-    video {
-      width: 45%;
-      margin: 5px;
-      background: #000;
-    }
-  </style>
-</head>
-<body>
-  <h2>Room: {{ room_name }}</h2>
-  <video id="localVideo" autoplay muted></video>
-  <video id="remoteVideo" autoplay></video>
+  <head>
+    <meta charset="UTF-8" />
+    <title>Video Chat Room: {{ room_name }}</title>
+    <style>
+      video {
+        width: 45%;
+        margin: 5px;
+        background: #000;
+      }
+    </style>
+  </head>
+  <body>
+    <h2>Room: {{ room_name }}</h2>
+    <video id="localVideo" autoplay muted></video>
+    <video id="remoteVideo" autoplay></video>
 
-  <script>
-    // Get the room name from Django template context.
-    const roomName = "{{ room_name }}";
+    <script>
+      const roomName = "{{ room_name }}";
+      const wsScheme = window.location.protocol === "https:" ? "wss" : "ws";
+      const signalingSocket = new WebSocket(
+        wsScheme + "://" + window.location.host + "/ws/video/" + roomName + "/"
+      );
 
-    // Set up WebSocket connection.
-    const wsScheme = window.location.protocol === "https:" ? "wss" : "ws";
-    const signalingSocket = new WebSocket(
-      wsScheme + '://' + window.location.host + '/ws/video/' + roomName + '/'
-    );
-
-    signalingSocket.onmessage = event => {
-      const data = JSON.parse(event.data);
-      console.log("Received signaling data:", data);
-      handleSignalingData(data);
-    };
-
-    signalingSocket.onopen = () => console.log("Connected to signaling server.");
-    signalingSocket.onerror = error => console.error("WebSocket error:", error);
-
-    // WebRTC variables.
-    const configuration = {
-      iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
-    };
-    let localStream;
-    let peerConnection;
-
-    const localVideo = document.getElementById('localVideo');
-    const remoteVideo = document.getElementById('remoteVideo');
-
-    // Get access to the camera and microphone.
-    navigator.mediaDevices.getUserMedia({ video: true, audio: true })
-      .then(stream => {
-        localVideo.srcObject = stream;
-        localStream = stream;
-      })
-      .catch(error => {
-        console.error("Error accessing media devices.", error);
-      });
-
-    // Create a new RTCPeerConnection.
-    function createPeerConnection() {
-      peerConnection = new RTCPeerConnection(configuration);
-
-      // Add all local stream tracks to the connection.
-      localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
-
-      // When a remote track is received, display it.
-      peerConnection.ontrack = event => {
-        if (remoteVideo.srcObject !== event.streams[0]) {
-          remoteVideo.srcObject = event.streams[0];
-          console.log("Remote stream added.");
-        }
+      signalingSocket.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+        console.log("Received signaling data:", data);
+        handleSignalingData(data);
       };
 
-      // When an ICE candidate is generated, send it via signaling.
-      peerConnection.onicecandidate = event => {
-        if (event.candidate) {
-          sendSignalingData({
-            type: 'candidate',
-            candidate: event.candidate
-          });
-        }
+      signalingSocket.onopen = () => console.log("Connected to signaling server.");
+      signalingSocket.onerror = (error) => console.error("WebSocket error:", error);
+
+      const configuration = {
+        iceServers: [
+          { urls: "stun:stun.l.google.com:19302" },
+          {
+            urls: "turn:TURN_SERVER_ADDRESS",
+            username: "TURN_USERNAME",
+            credential: "TURN_PASSWORD",
+          },
+        ],
       };
-    }
 
-    // Send a message via the signaling WebSocket.
-    function sendSignalingData(data) {
-      signalingSocket.send(JSON.stringify(data));
-    }
+      let localStream;
+      let peerConnection;
+      const localVideo = document.getElementById("localVideo");
+      const remoteVideo = document.getElementById("remoteVideo");
 
-    // Handle received signaling data.
-    async function handleSignalingData(data) {
-      switch(data.type) {
-        case "offer":
-          // If we receive an offer, create the peer connection (if not created)
-          if (!peerConnection) {
-            createPeerConnection();
+      navigator.mediaDevices
+        .getUserMedia({ video: true, audio: true })
+        .then((stream) => {
+          localVideo.srcObject = stream;
+          localStream = stream;
+          console.log("Local stream obtained.");
+        })
+        .catch((error) => {
+          console.error("Error accessing media devices.", error);
+        });
+
+      function createPeerConnection() {
+        if (!localStream) {
+          console.error("Local stream not available yet. Retrying in 1s...");
+          setTimeout(createPeerConnection, 1000);
+          return;
+        }
+
+        peerConnection = new RTCPeerConnection(configuration);
+        window.peerConnection = peerConnection; 
+
+        localStream
+          .getTracks()
+          .forEach((track) => peerConnection.addTrack(track, localStream));
+
+        peerConnection.ontrack = (event) => {
+          if (remoteVideo.srcObject !== event.streams[0]) {
+            remoteVideo.srcObject = event.streams[0];
+            console.log("Remote stream added.");
           }
-          await peerConnection.setRemoteDescription(new RTCSessionDescription(data.offer));
-          const answer = await peerConnection.createAnswer();
-          await peerConnection.setLocalDescription(answer);
-          sendSignalingData({
-            type: "answer",
-            answer: answer
-          });
-          break;
+        };
 
-        case "answer":
-          await peerConnection.setRemoteDescription(new RTCSessionDescription(data.answer));
-          break;
+        peerConnection.onicecandidate = (event) => {
+          if (event.candidate) {
+            sendSignalingData({
+              type: "candidate",
+              candidate: event.candidate,
+            });
+          }
+        };
 
-        case "candidate":
-          if (peerConnection) {
-            try {
-              await peerConnection.addIceCandidate(data.candidate);
-            } catch (e) {
-              console.error('Error adding received ICE candidate', e);
+        peerConnection.oniceconnectionstatechange = () => {
+          console.log("ICE Connection State:", peerConnection.iceConnectionState);
+        };
+      }
+
+      function sendSignalingData(data) {
+        signalingSocket.send(JSON.stringify(data));
+      }
+
+      async function handleSignalingData(data) {
+        switch (data.type) {
+          case "offer":
+            if (!peerConnection) {
+              createPeerConnection();
             }
-          }
-          break;
+            await peerConnection.setRemoteDescription(new RTCSessionDescription(data.offer));
+            const answer = await peerConnection.createAnswer();
+            await peerConnection.setLocalDescription(answer);
+            sendSignalingData({ type: "answer", answer });
+            break;
 
-        default:
-          break;
-      }
-    }
+          case "answer":
+            if (peerConnection && !peerConnection.remoteDescription) {
+              await peerConnection.setRemoteDescription(new RTCSessionDescription(data.answer));
+            }
+            break;
 
-    // Initiate the call by creating an offer.
-    async function initiateCall() {
-      if (!peerConnection) {
-        createPeerConnection();
+          case "candidate":
+            if (peerConnection?.remoteDescription) {
+              await peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate));
+            } else {
+              console.warn("ICE candidate received before remote description was set. Storing...");
+              setTimeout(() => handleSignalingData(data), 1000);
+            }
+            break;
+        }
       }
-      const offer = await peerConnection.createOffer();
-      await peerConnection.setLocalDescription(offer);
-      sendSignalingData({
-        type: "offer",
-        offer: offer
-      });
-    }
 
-    // For demonstration purposes:
-    // After 3 seconds, automatically initiate the call.
-    // (In a production app, you’d add logic so only one peer sends the offer.)
-    setTimeout(() => {
-      if (!peerConnection) {
-        initiateCall();
+      async function initiateCall() {
+        if (!peerConnection) {
+          createPeerConnection();
+        }
+
+        const offer = await peerConnection.createOffer();
+        await peerConnection.setLocalDescription(offer);
+        sendSignalingData({
+          type: "offer",
+          offer: offer,
+        });
       }
-    }, 3000);
-  </script>
-</body>
+
+      signalingSocket.onopen = () => {
+        console.log("WebSocket opened, initiating call...");
+        setTimeout(() => {
+          initiateCall();
+        }, 2000); 
+      };
+
+      window.debugConnection = function () {
+        console.log("ICE Connection State:", peerConnection?.iceConnectionState);
+        console.log("Signaling State:", peerConnection?.signalingState);
+        console.log("Connection State:", peerConnection?.connectionState);
+      };
+    </script>
+  </body>
 </html>
